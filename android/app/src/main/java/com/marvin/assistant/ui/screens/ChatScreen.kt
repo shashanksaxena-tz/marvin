@@ -19,17 +19,22 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.marvin.assistant.data.local.MessageEntity
+import com.marvin.assistant.data.repository.MarvinRepository
 import com.marvin.assistant.ui.components.ChatMessage
 import com.marvin.assistant.ui.components.MessageBubble
 import com.marvin.assistant.ui.components.VoiceRecorderButton
 import com.marvin.assistant.ui.theme.MarvinAccent
 import com.marvin.assistant.ui.theme.TextSecondary
 import dagger.hilt.android.lifecycle.HiltViewModel
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.MultipartBody
+import okhttp3.RequestBody.Companion.asRequestBody
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.*
 import javax.inject.Inject
@@ -41,18 +46,32 @@ data class ChatUiState(
 )
 
 @HiltViewModel
-class ChatViewModel @Inject constructor() : ViewModel() {
+class ChatViewModel @Inject constructor(
+    private val repository: MarvinRepository
+) : ViewModel() {
 
     private val _uiState = MutableStateFlow(ChatUiState())
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
 
     private val timeFormat = SimpleDateFormat("h:mm a", Locale.getDefault())
 
+    init {
+        // Load cached messages from Room DB
+        viewModelScope.launch {
+            repository.messages.collect { entities ->
+                // Room returns DESC order; reverse for chronological display
+                val chatMessages = entities.reversed().map { it.toChatMessage() }
+                _uiState.value = _uiState.value.copy(messages = chatMessages)
+            }
+        }
+    }
+
     fun sendMessage(text: String) {
         if (text.isBlank()) return
 
+        // Show optimistic user message immediately
         val userMessage = ChatMessage(
-            id = UUID.randomUUID().toString(),
+            id = "pending_user_${System.currentTimeMillis()}",
             text = text.trim(),
             sender = "You",
             timestamp = timeFormat.format(Date()),
@@ -67,36 +86,97 @@ class ChatViewModel @Inject constructor() : ViewModel() {
 
         viewModelScope.launch {
             try {
-                // TODO: Replace with actual API call to MARVIN backend
-                delay(1000)
-                val response = ChatMessage(
-                    id = UUID.randomUUID().toString(),
-                    text = "I received your message. The MARVIN backend integration is coming soon.",
+                val response = repository.sendMessage(text.trim())
+
+                // The repository caches both messages to Room, which triggers
+                // the Flow collector above to update the UI. We just need to
+                // add the assistant response optimistically for immediate display
+                // (the Room Flow will reconcile on next emission).
+                val assistantMessage = ChatMessage(
+                    id = "assistant_${System.currentTimeMillis()}",
+                    text = response.response,
                     sender = "MARVIN",
                     timestamp = timeFormat.format(Date()),
-                    classification = "note",
+                    classification = response.classification,
                     isUser = false,
                 )
                 _uiState.value = _uiState.value.copy(
-                    messages = _uiState.value.messages + response,
+                    messages = _uiState.value.messages + assistantMessage,
                     isLoading = false,
                 )
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
                     isLoading = false,
-                    error = e.message ?: "Something went wrong",
+                    error = e.message ?: "Failed to send message",
                 )
             }
         }
     }
 
     fun sendVoiceRecording(filePath: String) {
-        // TODO: Send audio file to transcription service
-        sendMessage("[Voice message recorded]")
+        val file = File(filePath)
+        if (!file.exists() || file.length() == 0L) {
+            _uiState.value = _uiState.value.copy(error = "Recording file not found")
+            return
+        }
+
+        _uiState.value = _uiState.value.copy(
+            isLoading = true,
+            error = null,
+        )
+
+        viewModelScope.launch {
+            try {
+                val requestBody = file.asRequestBody("audio/mp4".toMediaType())
+                val audioPart = MultipartBody.Part.createFormData("audio", file.name, requestBody)
+
+                val response = repository.sendVoice(audioPart)
+
+                // Show the transcribed user message and the assistant response
+                val now = System.currentTimeMillis()
+                val transcriptionMessage = ChatMessage(
+                    id = "voice_user_$now",
+                    text = response.transcription,
+                    sender = "You (voice)",
+                    timestamp = timeFormat.format(Date()),
+                    isUser = true,
+                )
+                val assistantMessage = ChatMessage(
+                    id = "voice_assistant_$now",
+                    text = response.response,
+                    sender = "MARVIN",
+                    timestamp = timeFormat.format(Date()),
+                    classification = response.classification,
+                    isUser = false,
+                )
+                _uiState.value = _uiState.value.copy(
+                    messages = _uiState.value.messages + transcriptionMessage + assistantMessage,
+                    isLoading = false,
+                )
+
+                // Clean up the temp recording file
+                file.delete()
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(
+                    isLoading = false,
+                    error = e.message ?: "Failed to send voice message",
+                )
+            }
+        }
     }
 
     fun clearError() {
         _uiState.value = _uiState.value.copy(error = null)
+    }
+
+    private fun MessageEntity.toChatMessage(): ChatMessage {
+        return ChatMessage(
+            id = id,
+            text = content,
+            sender = if (role == "user") "You" else "MARVIN",
+            timestamp = timeFormat.format(Date(timestamp)),
+            isUser = role == "user",
+        )
     }
 }
 

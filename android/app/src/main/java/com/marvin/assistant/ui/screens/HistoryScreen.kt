@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Search
@@ -15,13 +16,18 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.marvin.assistant.data.repository.MarvinRepository
 import com.marvin.assistant.ui.components.ClassificationChip
 import com.marvin.assistant.ui.theme.MarvinAccent
 import com.marvin.assistant.ui.theme.TextSecondary
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 data class HistoryItem(
@@ -33,43 +39,109 @@ data class HistoryItem(
 
 data class HistoryUiState(
     val items: List<HistoryItem> = emptyList(),
-    val filteredItems: List<HistoryItem> = emptyList(),
     val searchQuery: String = "",
     val selectedFilter: String = "All",
     val isLoading: Boolean = false,
+    val isLoadingMore: Boolean = false,
+    val error: String? = null,
+    val hasMore: Boolean = true,
+    val total: Int = 0,
 )
 
 @HiltViewModel
-class HistoryViewModel @Inject constructor() : ViewModel() {
+class HistoryViewModel @Inject constructor(
+    private val repository: MarvinRepository,
+) : ViewModel() {
 
     private val filters = listOf("All", "Captures", "Tasks", "Questions", "Links")
+    private val pageSize = 30
+    private var currentOffset = 0
+    private var searchJob: Job? = null
 
     private val _uiState = MutableStateFlow(HistoryUiState())
     val uiState: StateFlow<HistoryUiState> = _uiState.asStateFlow()
 
+    init {
+        loadHistory()
+    }
+
     fun search(query: String) {
         _uiState.value = _uiState.value.copy(searchQuery = query)
-        applyFilters()
+        // Debounce search
+        searchJob?.cancel()
+        searchJob = viewModelScope.launch {
+            delay(300)
+            currentOffset = 0
+            loadHistory()
+        }
     }
 
     fun filter(filterName: String) {
         _uiState.value = _uiState.value.copy(selectedFilter = filterName)
-        applyFilters()
+        currentOffset = 0
+        loadHistory()
     }
 
-    private fun applyFilters() {
+    fun loadMore() {
         val state = _uiState.value
-        val filtered = state.items.filter { item ->
-            val matchesSearch = state.searchQuery.isBlank() ||
-                item.preview.contains(state.searchQuery, ignoreCase = true)
-            val matchesFilter = state.selectedFilter == "All" ||
-                item.classification.equals(
-                    state.selectedFilter.removeSuffix("s"),
-                    ignoreCase = true,
+        if (state.isLoadingMore || !state.hasMore || state.isLoading) return
+        currentOffset += pageSize
+        loadHistory(append = true)
+    }
+
+    private fun loadHistory(append: Boolean = false) {
+        viewModelScope.launch {
+            if (append) {
+                _uiState.value = _uiState.value.copy(isLoadingMore = true)
+            } else {
+                _uiState.value = _uiState.value.copy(isLoading = true, error = null)
+            }
+
+            try {
+                val state = _uiState.value
+                val typeParam = when (state.selectedFilter) {
+                    "All" -> null
+                    "Captures" -> "capture"
+                    "Tasks" -> "task"
+                    "Questions" -> "question"
+                    "Links" -> "link"
+                    else -> null
+                }
+                val searchParam = state.searchQuery.ifBlank { null }
+
+                val response = repository.getHistory(
+                    limit = pageSize,
+                    offset = if (append) currentOffset else 0,
+                    type = typeParam,
+                    search = searchParam,
                 )
-            matchesSearch && matchesFilter
+
+                val newItems = response.messages.map { msg ->
+                    HistoryItem(
+                        id = msg.id.toString(),
+                        preview = msg.inputText,
+                        classification = msg.classification ?: "unknown",
+                        timestamp = msg.createdAt,
+                    )
+                }
+
+                val currentItems = if (append) _uiState.value.items else emptyList()
+                _uiState.value = _uiState.value.copy(
+                    items = currentItems + newItems,
+                    isLoading = false,
+                    isLoadingMore = false,
+                    error = null,
+                    hasMore = newItems.size >= pageSize,
+                    total = response.total,
+                )
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(
+                    isLoading = false,
+                    isLoadingMore = false,
+                    error = e.message ?: "Failed to load history",
+                )
+            }
         }
-        _uiState.value = state.copy(filteredItems = filtered)
     }
 
     fun getFilters(): List<String> = filters
@@ -81,6 +153,22 @@ fun HistoryScreen(
     viewModel: HistoryViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    val listState = rememberLazyListState()
+
+    // Trigger load more when near the bottom
+    val shouldLoadMore by remember {
+        derivedStateOf {
+            val lastVisibleIndex = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+            val totalItems = listState.layoutInfo.totalItemsCount
+            lastVisibleIndex >= totalItems - 5 && totalItems > 0
+        }
+    }
+
+    LaunchedEffect(shouldLoadMore) {
+        if (shouldLoadMore) {
+            viewModel.loadMore()
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -155,37 +243,80 @@ fun HistoryScreen(
                 }
             }
 
-            // History items list
-            if (uiState.isLoading) {
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    CircularProgressIndicator(color = MarvinAccent)
+            // Content area
+            when {
+                uiState.isLoading -> {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        CircularProgressIndicator(color = MarvinAccent)
+                    }
                 }
-            } else if (uiState.filteredItems.isEmpty()) {
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        text = if (uiState.searchQuery.isNotBlank()) {
-                            "No results found"
-                        } else {
-                            "No history yet"
-                        },
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = TextSecondary,
-                    )
+                uiState.error != null && uiState.items.isEmpty() -> {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Text(
+                                text = uiState.error ?: "Something went wrong",
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                            TextButton(onClick = {
+                                viewModel.filter(uiState.selectedFilter)
+                            }) {
+                                Text("Retry", color = MarvinAccent)
+                            }
+                        }
+                    }
                 }
-            } else {
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    items(uiState.filteredItems, key = { it.id }) { item ->
-                        HistoryItemCard(item = item)
+                uiState.items.isEmpty() -> {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            text = if (uiState.searchQuery.isNotBlank()) {
+                                "No results found"
+                            } else {
+                                "No history yet"
+                            },
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = TextSecondary,
+                        )
+                    }
+                }
+                else -> {
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        items(uiState.items, key = { it.id }) { item ->
+                            HistoryItemCard(item = item)
+                        }
+                        if (uiState.isLoadingMore) {
+                            item {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(16.dp),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    CircularProgressIndicator(
+                                        color = MarvinAccent,
+                                        modifier = Modifier.size(24.dp),
+                                        strokeWidth = 2.dp,
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
             }

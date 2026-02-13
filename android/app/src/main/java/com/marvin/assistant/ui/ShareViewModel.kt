@@ -96,16 +96,11 @@ class ShareViewModel @Inject constructor(
         viewModelScope.launch {
             _uiState.value = ShareUiState.Loading
             try {
-                val metadata = mutableMapOf<String, String>()
-                if (content.title != null) metadata["title"] = content.title
-                if (content.url != null) metadata["url"] = content.url
-                if (userContext != null) metadata["user_context"] = userContext
-
                 val shareRequest = ShareRequest(
-                    type = content.type,
-                    content = content.text ?: content.imageUri?.toString() ?: "",
-                    source = "android_share",
-                    metadata = metadata.ifEmpty { null }
+                    url = content.url,
+                    text = content.text,
+                    image = if (content.type == "image") content.imageUri?.toString() else null,
+                    context = userContext
                 )
 
                 val response = api.shareContent(shareRequest)

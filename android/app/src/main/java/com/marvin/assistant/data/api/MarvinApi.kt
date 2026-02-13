@@ -6,6 +6,7 @@ import com.marvin.assistant.data.models.MessageResponse
 import com.marvin.assistant.data.models.ShareRequest
 import com.marvin.assistant.data.models.ShareResponse
 import com.marvin.assistant.data.models.StatusResponse
+import com.marvin.assistant.data.models.VoiceResponse
 import okhttp3.MultipartBody
 import retrofit2.http.Body
 import retrofit2.http.GET
@@ -21,7 +22,7 @@ interface MarvinApi {
 
     @Multipart
     @POST("api/voice")
-    suspend fun sendVoice(@Part audio: MultipartBody.Part): MessageResponse
+    suspend fun sendVoice(@Part audio: MultipartBody.Part): VoiceResponse
 
     @POST("api/share")
     suspend fun shareContent(@Body request: ShareRequest): ShareResponse
@@ -32,6 +33,8 @@ interface MarvinApi {
     @GET("api/history")
     suspend fun getHistory(
         @Query("limit") limit: Int,
-        @Query("offset") offset: Int
+        @Query("offset") offset: Int,
+        @Query("type") type: String? = null,
+        @Query("search") search: String? = null
     ): HistoryResponse
 }

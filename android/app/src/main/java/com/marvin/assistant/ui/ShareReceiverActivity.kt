@@ -102,7 +102,7 @@ private fun ShareSheet(
     LaunchedEffect(uiState) {
         if (uiState is ShareUiState.Success) {
             delay(300)
-            onSuccess((uiState as ShareUiState.Success).response.message)
+            onSuccess((uiState as ShareUiState.Success).response.response)
         }
     }
 
