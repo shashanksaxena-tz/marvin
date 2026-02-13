@@ -1,0 +1,6 @@
+# MARVIN Backend URL
+# Change this to point to your MARVIN backend server
+MARVIN_API_URL=http://localhost:3000
+
+# Android SDK location (auto-detected by Android Studio)
+# sdk.dir=/path/to/android/sdk

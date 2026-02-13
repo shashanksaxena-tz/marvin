@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <!-- Base app theme -->
+    <style name="Theme.Marvin" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/marvin_accent</item>
+        <item name="colorPrimaryContainer">@color/marvin_accent</item>
+        <item name="android:statusBarColor">@color/marvin_background</item>
+        <item name="android:navigationBarColor">@color/marvin_background</item>
+        <item name="android:windowBackground">@color/marvin_background</item>
+    </style>
+
+    <!-- Transparent theme for share sheet overlay -->
+    <style name="Theme.Marvin.Transparent" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowContentOverlay">@null</item>
+        <item name="android:backgroundDimEnabled">false</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
+
+</resources>
