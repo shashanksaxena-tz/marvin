@@ -1,0 +1,4 @@
+# Integrations pending authentication
+# MARVIN will read this file on next startup and guide you through auth
+
+ms365
